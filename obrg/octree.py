@@ -5,7 +5,7 @@ import open3d as o3d
 
 from .utils import dist
 
-MAX_LEVEL = 5
+MAX_LEVEL = 6 #5
 centers = []
 
 corner_indices = np.array([v for v in list(product([-1, 0, 1], repeat=3)) if 0 not in v])
@@ -64,6 +64,9 @@ class Octree:
         return id(self) == id(__o)
 
     def create(self, minsize: float):
+        """
+        点数が3個未満 or 深さが6以上(rootを0)
+        """
         if len(self.indices) < 3 or self.level > MAX_LEVEL:
             return
         newSize = self.size / 2

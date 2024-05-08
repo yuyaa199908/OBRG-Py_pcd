@@ -3,18 +3,18 @@ from typing import Dict, List, Set
 import open3d as o3d
 import numpy as np
 from collections import deque
-from .io import get_points, save_planes, save_time
+from .io import get_points, save_planes, save_planes_pcd, save_time
 from .utils import ang_div, dist, bench_this
 from .octree import Octree, get_neighbor_count_same_cluster
 from .visualization import draw_complete, draw_incomplete, draw_leaf_centers
 from tqdm import tqdm
 
 # THRESHOLD PARAMETERS USED IN OBRG
-RES_TH = 0.08   
-D_TH = 0.1      
-ANG_TH = 0.18    
-MIN_SEGMENT = 5000
-PLAN_TH = 0.9
+RES_TH = 0.1   
+D_TH = 10.0      
+ANG_TH = 0.2    # in paper 10deg = 0.17rad
+MIN_SEGMENT = 100
+PLAN_TH = 0.01
 # RES_TH = 0.22    
 # D_TH = 0.2      
 # ANG_TH = 0.2    
@@ -32,25 +32,25 @@ def obrg(O: Octree) -> List[Set[Octree]]:
     while len(A) > 0:
         R_c: Set[Octree] = set()
         S_c: Set[Octree] = set()
-        v_min = A.popleft()
-        if v_min.residual > RES_TH:
+        v_min = A.popleft()    # residualが最小の葉を抽出
+        if v_min.residual > RES_TH: # residualがr_thを超えたら終了
             break
         S_c.add(v_min)
         R_c.add(v_min)
         while len(S_c) > 0:
-            v_i = S_c.pop()
-            B_c = v_i.get_neighbors()
-            for v_j in B_c:
-                ang = ang_div(v_i.normal, v_j.normal)
-                if v_j in A and ang <= ANG_TH:
+            v_i = S_c.pop() # 探索元ノードv_iを取り出し（初回ループはシード）
+            B_c = v_i.get_neighbors()   # v_iの26近傍のノードを返す
+            for v_j in B_c: #26近傍の各ノードv_jについて
+                ang = ang_div(v_i.normal, v_j.normal)   
+                if v_j in A and ang <= ANG_TH:  # v_iとv_jの法線の角度[rad] が θ_th 以下 且つ v_j が未探索
                     # check if already inserted somewhere
-                    R_c.add(v_j)
-                    A.remove(v_j)
-                    if v_j.residual < RES_TH:
-                        S_c.add(v_j)
-            m = sum([len(l.indices) for l in R_c])
-            if m > MIN_SEGMENT:
-                inclu = None
+                    R_c.add(v_j)    # 
+                    A.remove(v_j)   # v_j を未探索キューから除外
+                    if v_j.residual < RES_TH:   # residualがr_thを超えたら
+                        S_c.add(v_j)    # v_j を領域に追加
+            m = sum([len(l.indices) for l in R_c])  #R_cの点数の合計
+            if m > MIN_SEGMENT: #点数がしきい値を超えたら
+                inclu = None    
                 for l in R_c:
                     if l in visited.keys():
                         inclu = visited[l]
@@ -62,11 +62,11 @@ def obrg(O: Octree) -> List[Set[Octree]]:
                             break
                 else:
                     for l in R_c:
-                        visited[l] = v_i
-                    R.append(R_c)
-            else:
+                        visited[l] = v_i    #{26近傍:中心}
+                    R.append(R_c)       #R_cをRに追加
+            else:   #領域が小さすぎる場合
                 for l in R_c:
-                    l.is_unallocated = True
+                    l.is_unallocated = True #R_cのunallocated を true
     return sorted(R, key=lambda x: len(x), reverse=True)
 
 
@@ -148,7 +148,7 @@ def refinement(is_planar, oc, incomplete_segment, b_v, kdtree):
 
 
 # @bench_this
-def calculate(cloud_path: str, output_path: str, debug=False):
+def calculate(cloud_path: str, output_path: str, normal_kd_radius=0.1, normal_kd_nn=50, debug=False):
     """
     This is the main entrypoint for the algorithm.
     An unorganized point cloud in XYZ format is processed and the detected planes are stored in individual files. 
@@ -159,11 +159,16 @@ def calculate(cloud_path: str, output_path: str, debug=False):
     """
     # Preparation:
     # read point cloud
-    points = get_points(cloud_path)
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(points)
+
+    cloud = o3d.io.read_point_cloud(cloud_path)
+    points = np.asarray(cloud.points)
+    # points = get_points(cloud_path)
+    # cloud = o3d.geometry.PointCloud()
+    # cloud.points = o3d.utility.Vector3dVector(points)
+
+    # Estimate normals
     cloud.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_kd_radius, max_nn=normal_kd_nn))
     bb = o3d.geometry.AxisAlignedBoundingBox.create_from_points(
         o3d.utility.Vector3dVector(points))
     KDTree = o3d.geometry.KDTreeFlann(cloud)
@@ -210,7 +215,8 @@ def calculate(cloud_path: str, output_path: str, debug=False):
         colors = [np.random.rand(3) for _ in range(len(complete_segments))]
         draw_complete(complete_segments, points, colors)
     post = time()-start
+
     save_planes(complete_segments, output_path,
-                cloud_path.rsplit('/', 1)[-1].replace('.txt', ''))
+                cloud_path.rsplit('/', 1)[-1].replace('.*', ''))
     save_time(elapsed, pre, post, output_path, output_path.rsplit(
         '/', 1)[-1], cloud_path.rsplit('/', 1)[-1].replace('.txt', ''))
